@@ -203,7 +203,7 @@ function Switch-DbaLoginSID {
                 }
 
                 if ($userName -eq $destServer.ServiceAccount) {
-                    Write-Message -Level Verbose -Message "$userName is the destination service account. Skipping drop."
+                    Write-Message -Level Verbose -Message "Skipping $userName, it's the destination service account on $($destServer.name)."
 
                     $SwitchLoginStatus.Status = "Skipped"
                     $SwitchLoginStatus.Notes = "Destination service account"
@@ -211,7 +211,24 @@ function Switch-DbaLoginSID {
                     continue
                 }                
 
-                $oldlogin = $destServer.logins | Where-Object name -eq $userName
+                $destServer.logins | 
+                    Where-Object name -eq $userName |
+                    ForEach-Object {
+                        $login = [pscustomobject]@{
+                            id                          = $PSItem.id
+                            sid                         = $psitem.Get_Sid()
+                            DefaultDatabase             = $PSItem.DefaultDatabase
+                            Language                    = $PSItem.Language
+                            PasswordPolicyEnforced      = "ON"
+                            PasswordExpirationEnabled   = "ON"
+                        } 
+                        if ($PSItem.PasswordPolicyEnforced -eq $false) { $login.PasswordPolicyEnforced = "OFF" }
+                        if (!$PSItem.PasswordExpirationEnabled) { $login.PasswordExpirationEnabled = "OFF" }
+                    }
+
+                    
+
+                $login | fl *
 
                 Write-Message -Level Verbose -Message "Getting the databases owned by $userName on $($destServer.name)"                
                 $ownedDbs = $destServer.Databases | Where-Object Owner -eq $userName
@@ -244,7 +261,7 @@ function Switch-DbaLoginSID {
                     default {
                         $sql = "SELECT CAST(CONVERT(VARCHAR(256), CAST(LOGINPROPERTY(name,'PasswordHash')
                 AS VARBINARY(256)), 1) AS NVARCHAR(max)) AS hashedpass FROM sys.server_principals
-                WHERE principal_id = $($oldlogin.id)"
+                WHERE principal_id = $($login.id)"
                     }
                 }
                 try {
@@ -260,7 +277,52 @@ function Switch-DbaLoginSID {
                     $hashedPass = $passString
                 }                
 
-                #TODO: Drop the old login
+                # Drop the old login
+                if ($Pscmdlet.ShouldProcess($destination, "Dropping $userName")) {
+                    Write-Message -Level Verbose -Message "Attempting to drop $userName on $destination."
+                    try {
+                        foreach ($ownedDb in $ownedDbs) {
+                            Write-Message -Level Verbose -Message "Changing database owner for $($ownedDb.name) from $userName to sa."
+                            $ownedDb.SetOwner('sa')
+                            $ownedDb.Alter()
+                        }
+
+                        foreach ($ownedJob in $ownedJobs) {
+                            Write-Message -Level Verbose -Message "Changing job owner for $($ownedJob.name) from $userName to sa."
+                            $ownedJob.Set_OwnerLoginName('sa')
+                            $ownedJob.Alter()
+                        }
+
+                        $activeConnections = $destServer.EnumProcesses() | Where-Object Login -eq $userName
+
+                        if ($activeConnections -and $KillActiveConnection) {
+                            if (!$destServer.Logins.Item($userName).IsDisabled) {
+                                $disabled = $true
+                                $destServer.Logins.Item($userName).Disable()
+                            }
+
+                            $activeConnections | ForEach-Object { $destServer.KillProcess($_.Spid)}
+                            Write-Message -Level Verbose -Message "-KillActiveConnection was provided. There are $($activeConnections.Count) active connections killed."
+                            # just in case the kill didn't work, it'll leave behind a disabled account
+                            if ($disabled) { $destServer.Logins.Item($userName).Enable() }
+                        }
+                        elseif ($activeConnections) {
+                            Write-Message -Level Verbose -Message "There are $($activeConnections.Count) active connections found for the login $userName. Utilize -KillActiveConnection with -Force to kill the connections."
+                        }
+                        $destServer.Logins.Item($userName).Drop()
+
+                        Write-Message -Level Verbose -Message "Successfully dropped $userName on $destination."
+                    }
+                    catch {
+                        $SwitchLoginStatus.Status = "Failed"
+                        $SwitchLoginStatus.Notes = $_.Exception.Message
+                        $SwitchLoginStatus | Select-DefaultView -Property DateTime, SourceServer, DestinationServer, Name, Type, Status, Notes -TypeName MigrationObject
+
+                        Stop-Function -Message "Could not drop $userName." -Category InvalidOperation -ErrorRecord $_ -Target $destServer -Continue 3>$null
+                    }                    
+                }
+
+                $login | fl *
                 
                 #FIXME: remove the following line
                 $userName += "_test" #HACK
@@ -271,33 +333,121 @@ function Switch-DbaLoginSID {
 
                     Write-Message -Level Verbose -Message "Setting $userName SID to source username SID."
                     $destLogin.Set_Sid($sourceLogin.Get_Sid())
-                    $SwitchLoginStatus.SourceSID = $sourceLogin.Get_Sid()
-                    $SwitchLoginStatus.DestinationSID = $oldlogin.Get_Sid()
+                    $SwitchLoginStatus.SourceSID = ($sourceLogin.Get_Sid() | ForEach-Object { ("{0:X}" -f $_).PadLeft(2, "0") }) -join ""
+                    $SwitchLoginStatus.DestinationSID = ($Login.SID | ForEach-Object { ("{0:X}" -f $_).PadLeft(2, "0") }) -join ""
 
                     Write-Message -Level Verbose -Message "Set $userName defaultdb to $defaultDb."
-                    $destLogin.DefaultDatabase = $oldlogin.DefaultDatabase
+                    $destLogin.DefaultDatabase = $Login.DefaultDatabase
 
                     Write-Message -Level Verbose -Message "Setting login language to $($sourceLogin.Language)."
-                    $destLogin.Language = $oldlogin.Language
+                    $destLogin.Language = $login.Language
                     
-                    $destLogin.PasswordPolicyEnforced = $oldlogin.PasswordPolicyEnforced
-                    $destLogin.PasswordExpirationEnabled = $oldlogin.PasswordExpirationEnabled
+                    $destLogin.PasswordPolicyEnforced       = $login.PasswordPolicyEnforced
+                    $destLogin.PasswordExpirationEnabled    = $login.PasswordExpirationEnabled
 
                     #TODO: Create the login
+                    
+                    try {
+                        $destLogin.Create($hashedPass, [Microsoft.SqlServer.Management.Smo.LoginCreateOptions]::IsHashed)
+                        $destLogin.Refresh()
+                        Write-Message -Level Verbose -Message "Successfully re-added $userName to $destination."
 
-                    #TODO: Reassign the ownership of the databases
+                        $SwitchLoginStatus.Status = "Successful"
+                        $SwitchLoginStatus | Select-DefaultView -Property DateTime, SourceServer, DestinationServer, Name, Type, Status, Notes -TypeName MigrationObject
 
-                    #TODO: Reassign the ownership of the jobs 
+                    }
+                    catch {
+                        try {
+                            $sid = "0x"; $sourceLogin.sid | ForEach-Object { $sid += ("{0:X}" -f $_).PadLeft(2, "0") }
+                            $sql = "CREATE LOGIN [$userName] WITH PASSWORD = $hashedPass HASHED, SID = $sid,
+                                            DEFAULT_DATABASE = [$($Login.DefaultDatabase)], CHECK_POLICY = $($Login.PasswordPolicyEnforced),
+                                            CHECK_EXPIRATION = $($Login.PasswordExpirationEnabled), DEFAULT_LANGUAGE = [$($Login.Language)]"
+                            $sql
+                            $null = $destServer.Query($sql)
 
-                    #TODO: Add back the group memberships
+                            $destLogin = $destServer.logins[$userName]
+                            Write-Message -Level Verbose -Message "Successfully added $userName to $destination."
 
-                    #TODO: Add the other server permissions
+                            $SwitchLoginStatus.Status = "Successful"
+                            $SwitchLoginStatus | Select-DefaultView -Property DateTime, SourceServer, DestinationServer, Name, Type, Status, Notes -TypeName MigrationObject
+                        }
+                        catch {
+                            $SwitchLoginStatus.Status = "Failed"
+                            $SwitchLoginStatus.Notes = $_.Exception.Message
+                            $SwitchLoginStatus | Select-DefaultView -Property DateTime, SourceServer, DestinationServer, Name, Type, Status, Notes -TypeName MigrationObject
+
+                            Stop-Function -Message "Failed to add $userName to $destination." -Category InvalidOperation -ErrorRecord $_ -Target $destServer -Continue 3>$null
+                        }
+                    }                    
+
+                    # Reassign the ownership of the databases
+                    foreach ($owneddb in $ownedDbs){
+                        if ($Pscmdlet.ShouldProcess($destination, "Changing of datrabase owner to $userName for $($owneddb.Name).")) {
+                            try {                                
+                                Write-Message -Level Verbose -Message "Changing database owner for $($ownedDb.name) to $userName."
+                                $ownedDb.SetOwner($userName)
+                                $ownedDb.Alter()                                
+                            }
+                            catch{
+                                Stop-Function -Message "Failed to change database owner for $($owneddb.Name) on $destination." -Target $owneddb -ErrorRecord $_
+                            }                            
+                        }
+                    }
+
+                    # Reassign the ownership of the jobs 
+                    foreach ($ownedJob in $ownedJobs) {
+                        if ($Pscmdlet.ShouldProcess($destination, "Changing of job owner to $userName for $($ownedJob.Name).")) {
+                            try {
+                                $destOwnedJob = $DestServer.JobServer.Jobs | Where-Object { $_.Name -eq $ownedJobs.Name }
+                                $destOwnedJob.Set_OwnerLoginName($userName)
+                                $destOwnedJob.Alter()
+                                Write-Message -Level Verbose -Message "Changing job owner to $userName for $($ownedJob.Name) on $destination successfully performed."
+                            }
+                            catch {
+                                Stop-Function -Message "Failed to change job owner for $($ownedJob.Name) on $destination." -Target $ownedJob -ErrorRecord $_
+                            }
+                        }
+                    }
+
+                    # Add back the group memberships
+                    foreach ($role in $oldRoles){
+                        if ($Pscmdlet.ShouldProcess($destination, "Reassigning $userName to $($role.Name).")) {
+                            try {
+                                $role.AddMember($userName)
+                                Write-Message -Level Verbose -Message "Adding $userName to $($role.name) server role on $destination successfully performed."
+                            }
+                            catch {
+                                Stop-Function -Message "Failed to add $userName to $($role.name) server role on $destination." -Target $role -ErrorRecord $_
+                            }
+                        }
+                    }
+
+                    # Add the other server permissions
                     if ($DestServer.VersionMajor -ge 9) {
                         <#
                             These operations are only supported by SQL Server 2005 and above.
                             Securables: Connect SQL, View any database, Administer Bulk Operations, etc.
                         #>
-                        
+                        foreach ($perm in $perms){
+                            $permState = $perm.PermissionState
+                            if ($permState -eq "GrantWithGrant") {
+                                $grantWithGrant = $true;
+                                $permState = "grant"
+                            }
+                            else {
+                                $grantWithGrant = $false
+                            }
+                            $permSet = New-Object Microsoft.SqlServer.Management.Smo.ServerPermissionSet($perm.PermissionType)
+                            if ($Pscmdlet.ShouldProcess($destination, "$permState on $($perm.PermissionType) for $userName.")) {
+                                try {
+                                    $DestServer.PSObject.Methods[$permState].Invoke($permSet, $userName, $grantWithGrant)
+                                    Write-Message -Level Verbose -Message "$permState $($perm.PermissionType) to $userName on $destination successfully performed."
+                                }
+                                catch {
+                                    Stop-Function -Message "Failed to $permState $($perm.PermissionType) to $userName on $destination." -Target $perm -ErrorRecord $_
+                                }
+                            }                
+                        }
                     }
                 }
 
