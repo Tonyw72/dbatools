@@ -12,6 +12,8 @@ function Update-SqlPermissions {
             Destination Login
         .PARAMETER EnableException
             Use this switch to disable any kind of verbose messages
+        .PARAMETER NoDatabase
+            Use this swtich to disable the database permssions
     #>
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSUseSingularNouns", "")]
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSUseShouldProcessForStateChangingFunctions", "")]
@@ -29,6 +31,7 @@ function Update-SqlPermissions {
         [Parameter(Mandatory = $true)]
         [ValidateNotNullOrEmpty()]
         [object]$DestLogin,
+        [switch]$NoDatabase,
         [switch][Alias('Silent')]$EnableException
     )
 
@@ -177,6 +180,10 @@ function Update-SqlPermissions {
                 }
             }
         }
+    }
+
+    if ($NoDatabase) {
+        continue
     }
 
     if ($DestServer.VersionMajor -lt 9) {

@@ -145,12 +145,12 @@ function Switch-DbaLoginSID {
 
     begin {
 
-        function Switch-LoginSID{
-            foreach ($sourceLogin in $sourceServer.Logins) {
+        function Switch-LoginSID{            
+            foreach ($sourceLogin in $SourceServer.Logins) {
                 $userName = $sourceLogin.name    
                 
                 $SwitchLoginStatus = [pscustomobject]@{
-                    SourceServer      = $sourceServer.Name
+                    SourceServer      = $SourceServer.Name
                     DestinationServer = $destServer.Name
                     Type              = "Login - $($sourceLogin.LoginType)"
                     Name              = $userName
@@ -161,8 +161,7 @@ function Switch-DbaLoginSID {
                     Status            = $null
                     Notes             = $null
                     DateTime          = [DbaDateTime](Get-Date)
-                }
-                                
+                }                                
 
                 if ($Login -and $Login -notcontains $userName -or $ExcludeLogin -contains $userName) { continue }
 
@@ -173,11 +172,9 @@ function Switch-DbaLoginSID {
                     continue
                 }
 
-                $serverName = Resolve-NetBiosName $sourceServer
+                $currentLogin = $Source.ConnectionContext.truelogin
 
-                $currentLogin = $sourceServer.ConnectionContext.truelogin
-
-                if ($currentLogin -eq $userNa) {
+                if ($currentLogin -eq $userName) {
                     if ($Pscmdlet.ShouldProcess("console", "Stating $userName is skipped because it is performing the migration.")) {
                         Write-Message -Level Verbose -Message "Cannot drop login performing the migration. Skipping."
                     }
@@ -228,7 +225,7 @@ function Switch-DbaLoginSID {
 
                     
 
-                $login | fl *
+                $login | format-list *
 
                 Write-Message -Level Verbose -Message "Getting the databases owned by $userName on $($destServer.name)"                
                 $ownedDbs = $destServer.Databases | Where-Object Owner -eq $userName
@@ -273,7 +270,8 @@ function Switch-DbaLoginSID {
                 }
 
                 if ($hashedPass.GetType().Name -ne "String") {
-                    $passString = "0x"; $hashedPass | ForEach-Object { $passString += ("{0:X}" -f $_).PadLeft(2, "0") }
+                    $passString = "0x"; 
+                    $hashedPass | ForEach-Object { $passString += ("{0:X}" -f $_).PadLeft(2, "0") }
                     $hashedPass = $passString
                 }                
 
@@ -322,10 +320,10 @@ function Switch-DbaLoginSID {
                     }                    
                 }
 
-                $login | fl *
+                $login | Format-List *
                 
                 #FIXME: remove the following line
-                $userName += "_test" #HACK
+                #$userName += "_test" #HACK
                 $SwitchLoginStatus.DestinationLogin = $username
                 if ($Pscmdlet.ShouldProcess($destination, "Adding SQL login $userName")) {
                     Write-Message -Level Verbose -Message "Attempting to add $userName to $destination."
@@ -363,7 +361,7 @@ function Switch-DbaLoginSID {
                                             DEFAULT_DATABASE = [$($Login.DefaultDatabase)], CHECK_POLICY = $($Login.PasswordPolicyEnforced),
                                             CHECK_EXPIRATION = $($Login.PasswordExpirationEnabled), DEFAULT_LANGUAGE = [$($Login.Language)]"
                             $sql
-                            $null = $destServer.Query($sql)
+                            $null = Invoke-DbaSqlCmd -SqlInstance $destServer -Database 'Master' -query $sql
 
                             $destLogin = $destServer.logins[$userName]
                             Write-Message -Level Verbose -Message "Successfully added $userName to $destination."
@@ -457,26 +455,26 @@ function Switch-DbaLoginSID {
         } #end function Switch-LoginSID
 
         Write-Message -Level Verbose -Message "Attempting to connect to SQL Servers."
-        $sourceServer = Connect-SqlInstance -RegularUser -SqlInstance $Source -SqlCredential $SourceSqlCredential
-        $source = $sourceServer.DomainInstanceName
+        $SourceServer = Connect-SqlInstance -RegularUser -SqlInstance $Source -SqlCredential $SourceSqlCredential
+        $source = $Source.DomainInstanceName
 
         if ($Destination) {
             $destServer = Connect-SqlInstance -RegularUser -SqlInstance $Destination -SqlCredential $DestinationSqlCredential
             $Destination = $destServer.DomainInstanceName
 
-            $sourceVersionMajor = $sourceServer.VersionMajor
+            $sourceVersionMajor = $SourceServer.VersionMajor
             $destVersionMajor = $destServer.VersionMajor
             if ($sourceVersionMajor -gt 10 -and $destVersionMajor -lt 11) {
-                Stop-Function -Message "Login migration from version $sourceVersionMajor to $destVersionMajor is not supported." -Category InvalidOperation -ErrorRecord $_ -Target $sourceServer
+                Stop-Function -Message "Login migration from version $sourceVersionMajor to $destVersionMajor is not supported." -Category InvalidOperation -ErrorRecord $_ -Target $Source
             }
 
             if ($sourceVersionMajor -lt 8 -or $destVersionMajor -lt 8) {
-                Stop-Function -Message "SQL Server 7 and below are not supported." -Category InvalidOperation -InnerErrorRecord $_ -Target $sourceServer
+                Stop-Function -Message "SQL Server 7 and below are not supported." -Category InvalidOperation -InnerErrorRecord $_ -Target $Source
             }
         }
 
         if ($Source -eq $Destination){
-            Stop-Function -Message "Source ($Source) and Destination ($Destination) servers must be different." -Category InvalidOperation -ErrorRecord $_ -Target $sourceServer
+            Stop-Function -Message "Source ($Source) and Destination ($Destination) servers must be different." -Category InvalidOperation -ErrorRecord $_ -Target $Source
         }
 
         return $serverParms
@@ -487,7 +485,7 @@ function Switch-DbaLoginSID {
             Write-Message -Level Verbose -Message "Attempting Login Migration."
         }
 
-        Switch-LoginSID -sourceserver $sourceServer -destserver $destServer -Login $Login -Exclude $ExcludeLogin
+        Switch-LoginSID -sourceserver $Source -destserver $destServer -Login $Login -Exclude $ExcludeLogin
     }
     end {
         Test-DbaDeprecation -DeprecatedOn "1.0.0" -EnableException:$false -Alias Copy-SqlLogin

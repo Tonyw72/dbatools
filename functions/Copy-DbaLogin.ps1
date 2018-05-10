@@ -61,6 +61,9 @@ function Copy-DbaLogin {
 
             A login cannot be dropped when it has active connections on the instance.
 
+        .PARAMETER NoDatabase
+            If this switch is enabled, then the database permssions will be skipped.
+
         .PARAMETER WhatIf
             If this switch is enabled, no actions are performed but informational messages will be displayed that explain what would happen if the command were to run.
 
@@ -144,6 +147,7 @@ function Copy-DbaLogin {
         [string]$OutFile,
         [object]$PipeLogin,
         [hashtable]$LoginRenameHashtable,
+        [switch]$NoDatabase,
         [switch]$KillActiveConnection,
         [switch]$Force,
         [switch][Alias('Silent')]$EnableException
@@ -455,7 +459,7 @@ function Copy-DbaLogin {
                     }
                 }
                 if ($Pscmdlet.ShouldProcess($destination, "Updating SQL login $userName permissions")) {
-                    Update-SqlPermissions -sourceserver $sourceServer -sourcelogin $sourceLogin -destserver $destServer -destlogin $destLogin
+                    Update-SqlPermissions -sourceserver $sourceServer -sourcelogin $sourceLogin -destserver $destServer -destlogin $destLogin -NoDatabase:$NoDatabase.IsPresent
                 }
 
                 if ($LoginRenameHashtable.Keys -contains $userName) {

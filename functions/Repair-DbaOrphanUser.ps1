@@ -116,6 +116,7 @@ function Repair-DbaOrphanUser {
             if ($Database.Count -eq 0) {
 
                 $DatabaseCollection = $server.Databases | Where-Object { $_.IsSystemObject -eq $false -and $_.IsAccessible -eq $true }
+                
             }
             else {
                 if ($pipedatabase.Length -gt 0) {
@@ -123,7 +124,13 @@ function Repair-DbaOrphanUser {
                     $DatabaseCollection = $pipedatabase.name
                 }
                 else {
-                    $DatabaseCollection = $server.Databases | Where-Object { $_.IsSystemObject -eq $false -and $_.IsAccessible -eq $true -and ($Database -contains $_.Name) }
+                    #$DatabaseCollection = $server.Databases | Where-Object { $_.IsSystemObject -eq $false -and $_.IsAccessible -eq $true -and ($Database -contains $_.Name) }
+                    $DatabaseCollection = 
+                        @($Database |
+                            ForEach-Object {
+                                $server.Databases[$PSItem] | 
+                                    Where-Object { $_.IsSystemObject -eq $false -and $_.IsAccessible -eq $true }   
+                            })
                 }
             }
 
@@ -150,8 +157,15 @@ function Repair-DbaOrphanUser {
                                 $UsersToWork = $pipedatabase.name
                             }
                             else {
-                                #the fourth validation will remove from list sql users without login. The rule here is Sid with length higher than 16
-                                $UsersToWork = $db.Users | Where-Object { $_.Login -eq "" -and ($_.ID -gt 4) -and ($Users -contains $_.Name) -and (($_.Sid.Length -gt 16 -and $_.LoginType -eq [Microsoft.SqlServer.Management.Smo.LoginType]::SqlLogin) -eq $false) }
+                                #the fourth validation will remove from list sql users without login. The rule here is Sid with length higher than 16                                
+                                #$UsersToWork = $db.Users | Where-Object { $_.Login -eq "" -and ($_.ID -gt 4) -and ($Users -contains $_.Name) -and (($_.Sid.Length -gt 16 -and $_.LoginType -eq [Microsoft.SqlServer.Management.Smo.LoginType]::SqlLogin) -eq $false) }
+                                $UsersToWork = @($users |
+                                    ForEach-Object {                                        
+                                        $db.users[$PSItem] | 
+                                            Where-Object Login -eq "" |
+                                            Where-Object ID -gt 4 |                                            
+                                            Where-Object {($_.Sid.Length -gt 16 -and $_.LoginType -eq [Microsoft.SqlServer.Management.Smo.LoginType]::SqlLogin) -eq $false}
+                                    })                                                                    
                             }
                         }
 
