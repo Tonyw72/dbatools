@@ -1,4 +1,4 @@
-function Switch-DbaLoginSID {
+function Sync-DbaLoginSID {
     <#
         .SYNOPSIS
             Updates the SQL Login SID on the destination SQL Servers. Supports SQL Server versions 2000 and newer.
@@ -40,21 +40,8 @@ function Switch-DbaLoginSID {
         .PARAMETER ExcludeLogin
             The login(s) to exclude. Options for this list are auto-populated from the server.
 
-        .PARAMETER SyncOnly
-            If this switch is enabled, only SQL Server login permissions, roles, etc. will be synced. Logins and users will not be added or dropped.  If a matching Login does not exist on the destination, the Login will be skipped.
-            Credential removal is not currently supported for this parameter.
-
-        .PARAMETER SyncSaName
-            If this switch is enabled, the name of the sa account will be synced between Source and Destination
-
         .PARAMETER OutFile
             Calls Export-SqlLogin and exports all logins to a T-SQL formatted file. This does not perform a copy, so no destination is required.
-
-        .PARAMETER PipeLogin
-            Takes the parameters required from a Login object that has been piped into the command
-
-        .PARAMETER LoginRenameHashtable
-            Pass a hash table into this parameter to be passed into Rename-DbaLogin to update the Login and mappings after the Login is completed.
 
         .PARAMETER KillActiveConnection
             If this switch and -Force are enabled, all active connections and sessions on Destination will be killed.
@@ -66,9 +53,6 @@ function Switch-DbaLoginSID {
 
         .PARAMETER Confirm
             If this switch is enabled, you will be prompted for confirmation before executing any operations that change state.
-
-        .PARAMETER Force
-            If this switch is enabled, the Login(s) will be dropped and recreated on Destination. Logins that own Agent jobs cannot be dropped at this time.
 
         .PARAMETER EnableException
             By default, when something goes wrong we try to catch it, interpret it and give you a friendly warning message.
@@ -85,45 +69,15 @@ function Switch-DbaLoginSID {
             License: GNU GPL v3 https://opensource.org/licenses/GPL-3.0
 
         .LINK
-            https://dbatools.io/Switch-DbaLoginSID
+            https://dbatools.io/Sync-DbaLoginSID
 
         .EXAMPLE
-            Switch-DbaLoginSID -Source sqlserver2014a -Destination sqlcluster -Force
+            Sync-DbaLoginSID -Source sqlserver2014a -Destination sqlserver2014b -login 'TonyW' -Force
 
-            Copies all logins from Source Destination. If a SQL Login on Source exists on the Destination, the Login on Destination will be dropped and recreated.
+            Drops and recreates the login 'TonyW' on the desitnation server with the SID from the source server. The login wil retain the password, 
+            ownerships and permissions that it had previously on the destination server.
 
             If active connections are found for a login, the copy of that Login will fail as it cannot be dropped.
-
-        .EXAMPLE
-            Copy-DbaLogin -Source sqlserver2014a -Destination sqlcluster -Force -KillActiveConnection
-
-            Copies all logins from Source Destination. If a SQL Login on Source exists on the Destination, the Login on Destination will be dropped and recreated.
-
-            If any active connections are found they will be killed.
-
-        .EXAMPLE
-            Copy-DbaLogin -Source sqlserver2014a -Destination sqlcluster -Exclude realcajun -SourceSqlCredential $scred -DestinationSqlCredential $dcred
-
-            Copies all Logins from Source to Destination except for realcajun using SQL Authentication to connect to both instances.
-
-            If a Login already exists on the destination, it will not be migrated.
-
-        .EXAMPLE
-            Copy-DbaLogin -Source sqlserver2014a -Destination sqlcluster -Login realcajun, netnerds -force
-
-            Copies ONLY Logins netnerds and realcajun. If Login realcajun or netnerds exists on Destination, the existing Login(s) will be dropped and recreated.
-
-        .EXAMPLE
-            Copy-DbaLogin -Source sqlserver2014a -Destination sqlcluster -SyncOnly
-
-            Syncs only SQL Server login permissions, roles, etc. Does not add or drop logins or users.
-
-            If a matching Login does not exist on Destination, the Login will be skipped.
-
-        .EXAMPLE
-            Copy-DbaLogin -LoginRenameHashtable @{ "OldUser" ="newlogin" } -Source $Sql01 -Destination Localhost -SourceSqlCredential $sqlcred
-
-            Copies OldUser and then renames it to newlogin.
     #>
     [CmdletBinding(DefaultParameterSetName = "Default", SupportsShouldProcess = $true)]
     Param (
@@ -145,7 +99,7 @@ function Switch-DbaLoginSID {
 
     begin {
 
-        function Switch-LoginSID{            
+        function Sync-LoginSID{            
             foreach ($sourceLogin in $SourceServer.Logins) {
                 $userName = $sourceLogin.name    
                 
@@ -222,11 +176,7 @@ function Switch-DbaLoginSID {
                         if ($PSItem.PasswordPolicyEnforced -eq $false) { $login.PasswordPolicyEnforced = "OFF" }
                         if (!$PSItem.PasswordExpirationEnabled) { $login.PasswordExpirationEnabled = "OFF" }
                     }
-
                     
-
-                $login | format-list *
-
                 Write-Message -Level Verbose -Message "Getting the databases owned by $userName on $($destServer.name)"                
                 $ownedDbs = $destServer.Databases | Where-Object Owner -eq $userName
 
@@ -452,7 +402,7 @@ function Switch-DbaLoginSID {
                 $SwitchLoginStatus                
 
             }
-        } #end function Switch-LoginSID
+        } #end function Sync-LoginSID
 
         Write-Message -Level Verbose -Message "Attempting to connect to SQL Servers."
         $SourceServer = Connect-SqlInstance -RegularUser -SqlInstance $Source -SqlCredential $SourceSqlCredential
@@ -485,9 +435,9 @@ function Switch-DbaLoginSID {
             Write-Message -Level Verbose -Message "Attempting Login Migration."
         }
 
-        Switch-LoginSID -sourceserver $Source -destserver $destServer -Login $Login -Exclude $ExcludeLogin
+        Sync-LoginSID -sourceserver $Source -destserver $destServer -Login $Login -Exclude $ExcludeLogin
     }
     end {
-        Test-DbaDeprecation -DeprecatedOn "1.0.0" -EnableException:$false -Alias Copy-SqlLogin
+        
     }
 }
