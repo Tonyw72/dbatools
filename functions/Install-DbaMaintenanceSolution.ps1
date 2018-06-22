@@ -47,6 +47,9 @@ function Install-DbaMaintenanceSolution {
             By default, when something goes wrong we try to catch it, interpret it and give you a friendly warning message.
             This avoids overwhelming you with "sea of red" exceptions, but is inconvenient because it basically disables advanced scripting.
             Using this switch turns this "nice by default" feature off and enables you to catch exceptions with your own try/catch.
+        
+        .PARAMETER Path
+            Lets you specify a path so you can pass in the maintenance solution files instead of downloading them.
 
         .NOTES
             Author: Viorel Ciucu, viorel.ciucu@gmail.com, cviorel.com
@@ -112,7 +115,8 @@ function Install-DbaMaintenanceSolution {
         [ValidateSet('All', 'Backup', 'IntegrityCheck', 'IndexOptimize')]
         [string]$Solution = 'All',
         [switch]$InstallJobs,
-        [switch][Alias('Silent')]$EnableException
+        [switch][Alias('Silent')]$EnableException,
+        [string]$Path
     )
 
     process {
@@ -179,32 +183,48 @@ function Install-DbaMaintenanceSolution {
             if ($Solution -match 'All') {
                 $required += 'MaintenanceSolution.sql'
             }
+            
+            if ((Test-Bound -Parameter Path -Not)) {            
+                $temp = ([System.IO.Path]::GetTempPath()).TrimEnd("\")
+                $zipfile = "$temp\ola.zip"
 
-            $temp = ([System.IO.Path]::GetTempPath()).TrimEnd("\")
-            $zipfile = "$temp\ola.zip"
+                # Start the download
+                $url = "https://github.com/olahallengren/sql-server-maintenance-solution/archive/master.zip"
+                try {
+                    Start-BitsTransfer -Source $url -DisplayName 'Downloading SQL Server Maintenance Solution - https://ola.hallengren.com' -Destination $zipfile -ErrorAction Stop
+                }
+                catch {
+                    Stop-Function -Message "You need to re-run the script, there is a problem with the proxy or the download link has changed." -ErrorRecord $_
+                }
 
-            # Start the download
-            $url = "https://github.com/olahallengren/sql-server-maintenance-solution/archive/master.zip"
-            try {
-                Start-BitsTransfer -Source $url -DisplayName 'Downloading SQL Server Maintenance Solution - https://ola.hallengren.com' -Destination $zipfile -ErrorAction Stop
+                # Unblock if there's a block
+                Unblock-File $zipfile -ErrorAction SilentlyContinue
+
+                $path = "$temp\sql-server-maintenance-solution-master"
+            
+                # We don't like default parameters messed with so we start clean
+                if ((Test-Path $path)) {
+                    Remove-Item -Path $temp\sql-server-maintenance-solution-master -Recurse -Force -ErrorAction SilentlyContinue
+                }
+
+                # internal if it doesn't exist
+                Expand-Archive -Path $zipfile -DestinationPath $temp -Force
+                Remove-Item -Path $zipfile
             }
-            catch {
-                Stop-Function -Message "You need to re-run the script, there is a problem with the proxy or the download link has changed." -ErrorRecord $_
+            else {
+                $path = $path.TrimEnd("\")
+                #Verify that the path has all of the files required
+                if ((Test-Path $path) -eq $false) {
+                    Stop-Function -Message "The path passed in isn't valid" -EnableException $true -ErrorRecord $_
+                    return
+                }
+                foreach($r in $required) {
+                    if ((Test-Path "$($path)\$($r)") -eq $false) {
+                        Stop-Function -Message "The path passed in is missing $r" -EnableException $true -ErrorRecord $_
+                        return
+                    }
+                }
             }
-
-            # Unblock if there's a block
-            Unblock-File $zipfile -ErrorAction SilentlyContinue
-
-            $path = "$temp\sql-server-maintenance-solution-master"
-
-            # We don't like default parameters messed with so we start clean
-            if ((Test-Path $path)) {
-                Remove-Item -Path $temp\sql-server-maintenance-solution-master -Recurse -Force -ErrorAction SilentlyContinue
-            }
-
-            # internal if it doesn't exist
-            Expand-Archive -Path $zipfile -DestinationPath $temp -Force
-            Remove-Item -Path $zipfile
 
             $listOfFiles = Get-ChildItem -Filter "*.sql" -Path $path | Select-Object -ExpandProperty FullName
 
